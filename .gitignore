@@ -6,3 +6,4 @@ coverage/
 *.log
 .env*
 !.env.example
+\n__pycache__/\n*.pyc\n*.db
