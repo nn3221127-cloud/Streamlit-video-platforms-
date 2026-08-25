@@ -1,0 +1,6 @@
+{
+  "name": "StreamIntel Studio",
+  "description": "Enterprise-grade multimodal video intelligence, semantic indexing, hybrid vector search, grounded Q&A, and personalized streaming platform powered by Gemini.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
