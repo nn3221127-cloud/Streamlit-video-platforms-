@@ -2,6 +2,8 @@ import os
 import json
 import time
 import asyncio
+import re
+import base64
 from typing import Dict, Any, List, Optional
 from google import genai
 from google.genai import types
@@ -20,22 +22,27 @@ def get_genai_client() -> Optional[genai.Client]:
         print(f"[AIEngine] Failed to initialize GenAI Client: {e}")
         return None
 
-def with_retry(fn, max_retries: int = 3, initial_delay: float = 1.0):
+def with_retry(fn: Any, max_retries: int = 3, initial_delay: float = 1.0) -> Any:
     """
     Helper function executing fn with exponential backoff for rate limits or transient errors.
     """
     delay = initial_delay
-    last_err = None
+    last_err: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
         try:
             return fn()
         except Exception as err:
-            last_err = err
+            if isinstance(err, Exception):
+                last_err = err
+            else:
+                last_err = Exception(str(err))
             print(f"[AIEngine] Gemini API call attempt {attempt}/{max_retries} failed: {err}")
             if attempt < max_retries:
                 time.sleep(delay)
                 delay *= 2.0
-    raise last_err
+    if last_err:
+        raise last_err
+    raise RuntimeError("Max retries exceeded")
 
 def format_timestamp(seconds: float) -> str:
     """Formats seconds into MM:SS format."""
@@ -125,18 +132,19 @@ Return your output strictly as valid JSON adhering to this schema:
 }}"""
 
     try:
-        contents = []
+        contents: List[Any] = []
         if uploaded_video_base64:
+            # Decode base64 string to raw binary bytes
+            video_bytes = base64.b64decode(uploaded_video_base64)
             contents.append(
                 types.Part.from_bytes(
-                    data=bytes(uploaded_video_base64, 'utf-8'),
+                    data=video_bytes,
                     mime_type=mime_type
                 )
             )
-        contents.append(prompt)
+        contents.append(types.Part.from_text(text=prompt))
 
-        def call_api():
-            # Use gemini-2.5-flash or fallback model
+        def call_api() -> Any:
             return client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=contents,
@@ -218,9 +226,13 @@ GUIDELINES:
     if use_thinking_high:
         model_name = "gemini-2.5-pro"
 
-    # Build prompt history
-    contents_payload = []
-    for turn in chat_history[-6:]:
+    # Filter out duplicate trailing message if caller already appended message to chat_history
+    filtered_history = list(chat_history)
+    if filtered_history and filtered_history[-1].get("role") == "user" and filtered_history[-1].get("content") == message:
+        filtered_history.pop()
+
+    contents_payload: Any = []
+    for turn in filtered_history[-6:]:
         role = "model" if turn.get("role") in ["assistant", "model"] else "user"
         contents_payload.append(types.Content(
             role=role,
@@ -240,7 +252,7 @@ GUIDELINES:
         config_kwargs["tools"] = [{"google_search": {}}]
 
     try:
-        def call_chat():
+        def call_chat() -> Any:
             return client.models.generate_content(
                 model=model_name,
                 contents=contents_payload,
@@ -250,9 +262,7 @@ GUIDELINES:
         response = with_retry(call_chat)
         response_text = response.text or "I parsed the video data but could not generate a response."
 
-        # Extract timestamp citations
-        import re
-        citations = []
+        citations: List[Dict[str, Any]] = []
         matches = re.findall(r'\[(\d{1,2}):(\d{2})\]', response_text)
         for m_min, m_sec in matches:
             total_sec = int(m_min) * 60 + int(m_sec)
