@@ -13,9 +13,12 @@ import {
   Flame,
   Clock,
   X,
-  Play
+  Play,
+  User,
+  Users,
+  ShieldCheck,
 } from 'lucide-react';
-import { VideoItem, SearchResult } from '../types';
+import { VideoItem, SearchResult, UserAccount, WatchPartyRoom } from '../types';
 
 interface NavbarProps {
   onOpenIngest: () => void;
@@ -26,6 +29,10 @@ interface NavbarProps {
   onToggleTheaterMode: () => void;
   activeCategory: string;
   onSelectCategory: (category: string) => void;
+  currentUser?: UserAccount | null;
+  onOpenAuthModal?: () => void;
+  onOpenWatchParty?: () => void;
+  activeWatchRoom?: WatchPartyRoom | null;
 }
 
 const CATEGORIES = ['All', 'AI & Machine Learning', 'Quantum Computing', 'Robotics & Automation', 'Space & Astronomy', 'Biotech & Genomics', 'Cybersecurity & Cloud'];
@@ -39,6 +46,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleTheaterMode,
   activeCategory,
   onSelectCategory,
+  currentUser,
+  onOpenAuthModal,
+  onOpenWatchParty,
+  activeWatchRoom,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -198,6 +209,22 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Action Controls */}
         <div className="flex items-center gap-2">
           
+          {/* Watch Party Trigger */}
+          {onOpenWatchParty && (
+            <button
+              onClick={onOpenWatchParty}
+              title="Join or host a synchronized watch party"
+              className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition-all ${
+                activeWatchRoom
+                  ? 'border-emerald-500/50 bg-emerald-950/40 text-emerald-300 shadow-sm shadow-emerald-500/20'
+                  : 'border-slate-700/70 bg-slate-900/80 text-slate-200 hover:border-emerald-500/50 hover:bg-slate-800 hover:text-emerald-300'
+              }`}
+            >
+              <Users className="h-4 w-4 text-emerald-400" />
+              <span className="hidden sm:inline">{activeWatchRoom ? 'Party (Live)' : 'Watch Party'}</span>
+            </button>
+          )}
+
           {/* Voice Query Button */}
           <button
             onClick={onOpenVoiceQuery}
@@ -238,6 +265,31 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Tv className="h-4 w-4" />
           </button>
+
+          {/* User Auth Profile Button */}
+          {onOpenAuthModal && (
+            <button
+              onClick={onOpenAuthModal}
+              title={currentUser ? `${currentUser.name} (${currentUser.role})` : 'Sign In / Register'}
+              className="flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-900/90 py-1 px-2.5 text-xs font-semibold text-slate-200 hover:border-cyan-500/60 hover:bg-slate-800 transition-all"
+            >
+              {currentUser ? (
+                <>
+                  <img
+                    src={currentUser.avatar}
+                    alt={currentUser.name}
+                    className="h-5 w-5 rounded-full object-cover border border-cyan-500/50"
+                  />
+                  <span className="hidden lg:inline truncate max-w-[90px]">{currentUser.name.split(' ')[0]}</span>
+                </>
+              ) : (
+                <>
+                  <User className="h-4 w-4 text-cyan-400" />
+                  <span className="hidden sm:inline">Sign In</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
@@ -271,6 +323,7 @@ function formatDuration(seconds: number): string {
 }
 
 function formatTime(seconds: number): string {
+  if (isNaN(seconds) || seconds < 0) return '00:00';
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;

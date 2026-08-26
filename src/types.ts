@@ -6,6 +6,7 @@ export interface ChapterMarker {
   summary: string;
   keyVisual?: string;
   confidence?: number;
+  topicShiftType?: 'major_theme' | 'scene_change' | 'technical_deep_dive' | 'conclusion';
 }
 
 export interface TranscriptSegment {
@@ -14,6 +15,22 @@ export interface TranscriptSegment {
   endTime: number;
   speaker?: string;
   text: string;
+}
+
+export interface TranslatedTranscript {
+  languageCode: string;
+  languageName: string;
+  segments: TranscriptSegment[];
+}
+
+export interface VideoSummaryPayload {
+  overview: string;
+  keyTopics: { topic: string; timestamp?: number; description: string }[];
+  keyEvents: { timestamp: number; title: string; eventDescription: string; importance: 'high' | 'medium' | 'normal' }[];
+  takeaways: string[];
+  readingTimeMinutes: number;
+  complexityLevel: 'Executive' | 'Standard' | 'Deep Dive';
+  generatedAt?: number;
 }
 
 export interface VisualScene {
@@ -49,6 +66,8 @@ export interface VideoItem {
   tags: string[];
   chapters: ChapterMarker[];
   transcript: TranscriptSegment[];
+  translations?: Record<string, TranscriptSegment[]>; // langCode -> segments
+  summaryData?: VideoSummaryPayload;
   keyTakeaways: string[];
   topicAffinities: { topic: string; weight: number }[];
   visualScenes?: VisualScene[];
@@ -109,7 +128,25 @@ export interface WatchHistoryEntry {
   watchDuration?: number;
 }
 
+export interface UserAccount {
+  id: string;
+  email: string;
+  name: string;
+  avatar: string;
+  role: 'admin' | 'creator' | 'viewer';
+  badge?: string;
+  createdAt: number;
+  preferences: {
+    playbackSpeed: number;
+    quality: string;
+    autoplayNext: boolean;
+    theme: string;
+    preferredLanguage: string;
+  };
+}
+
 export interface UserState {
+  user?: UserAccount | null;
   watchHistory: WatchHistoryEntry[];
   likedVideoIds: string[];
   bookmarkedTimestamps: BookmarkItem[];
@@ -120,6 +157,7 @@ export interface UserState {
     quality: string;
     autoplayNext: boolean;
     theme: string;
+    preferredLanguage?: string;
   };
 }
 
@@ -147,4 +185,68 @@ export interface RecommendationRail {
   subtitle: string;
   tag: string;
   videos: VideoItem[];
+}
+
+// Watch Party & Real-time Collaboration Types
+export interface PartyParticipant {
+  id: string;
+  name: string;
+  avatar: string;
+  isHost: boolean;
+  joinedAt: number;
+  lastPing: number;
+}
+
+export interface PartyPlaybackState {
+  isPlaying: boolean;
+  currentTime: number;
+  playbackSpeed: number;
+  lastUpdated: number;
+  updatedBy: string;
+  updatedByName: string;
+}
+
+export interface PartyChatMessage {
+  id: string;
+  userId: string;
+  userName: string;
+  userAvatar: string;
+  text: string;
+  timestamp: number;
+  videoTimestamp?: number;
+}
+
+export interface PartyReaction {
+  id: string;
+  userId: string;
+  userName: string;
+  emoji: string;
+  timestamp: number;
+  x: number; // percentage across player (10 to 90)
+}
+
+export interface PartyTimelineComment {
+  id: string;
+  userId: string;
+  userName: string;
+  userAvatar: string;
+  timestamp: number;
+  text: string;
+  createdAt: number;
+  likes: number;
+}
+
+export interface WatchPartyRoom {
+  roomId: string;
+  name: string;
+  hostId: string;
+  hostName: string;
+  videoId: string;
+  videoTitle: string;
+  playbackState: PartyPlaybackState;
+  participants: PartyParticipant[];
+  messages: PartyChatMessage[];
+  reactions: PartyReaction[];
+  timelineComments: PartyTimelineComment[];
+  createdAt: number;
 }

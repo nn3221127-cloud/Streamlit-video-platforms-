@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ListTree,
   FileText,
@@ -13,10 +13,28 @@ import {
   Trash2,
   Plus,
   Flame,
-  Tag,
-  Lightbulb
+  Globe,
+  Languages,
+  RotateCw,
+  Copy,
+  Check,
+  Download,
+  AlertCircle,
+  ChevronRight,
+  TrendingUp,
+  Cpu,
+  Layers,
+  ArrowRightLeft,
+  Volume2,
 } from 'lucide-react';
-import { VideoItem, ChapterMarker, BookmarkItem, UserNote } from '../types';
+import {
+  VideoItem,
+  ChapterMarker,
+  BookmarkItem,
+  UserNote,
+  TranscriptSegment,
+  VideoSummaryPayload,
+} from '../types';
 
 interface VideoIntelligenceTabsProps {
   video: VideoItem;
@@ -27,9 +45,25 @@ interface VideoIntelligenceTabsProps {
   onAddNote: (text: string, timestamp: number) => void;
   onDeleteNote: (id: string) => void;
   onDeleteBookmark: (id: string) => void;
+  onVideoUpdated?: (updatedVideo: VideoItem) => void;
 }
 
-type TabType = 'chapters' | 'transcript' | 'takeaways' | 'scenes' | 'clips' | 'notes';
+type TabType = 'summary' | 'chapters' | 'transcript' | 'takeaways' | 'scenes' | 'clips' | 'notes';
+
+const SUPPORTED_LANGUAGES = [
+  { code: 'en', name: 'English (Original)', flag: '🇺🇸' },
+  { code: 'es', name: 'Spanish (Español)', flag: '🇪🇸' },
+  { code: 'fr', name: 'French (Français)', flag: '🇫🇷' },
+  { code: 'de', name: 'German (Deutsch)', flag: '🇩🇪' },
+  { code: 'ja', name: 'Japanese (日本語)', flag: '🇯🇵' },
+  { code: 'zh', name: 'Chinese (中文)', flag: '🇨🇳' },
+  { code: 'hi', name: 'Hindi (हिन्दी)', flag: '🇮🇳' },
+  { code: 'pt', name: 'Portuguese (Português)', flag: '🇧🇷' },
+  { code: 'ko', name: 'Korean (한국어)', flag: '🇰🇷' },
+  { code: 'it', name: 'Italian (Italiano)', flag: '🇮🇹' },
+  { code: 'ar', name: 'Arabic (العربية)', flag: '🇸🇦' },
+  { code: 'ru', name: 'Russian (Русский)', flag: '🇷🇺' },
+];
 
 export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
   video,
@@ -40,15 +74,206 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
   onAddNote,
   onDeleteNote,
   onDeleteBookmark,
+  onVideoUpdated,
 }) => {
-  const [activeTab, setActiveTab] = useState<TabType>('chapters');
+  const [activeTab, setActiveTab] = useState<TabType>('summary');
   const [transcriptSearch, setTranscriptSearch] = useState('');
   const [noteInput, setNoteInput] = useState('');
 
-  // Filtered transcript search
-  const filteredTranscript = (video.transcript || []).filter((t) =>
-    transcriptSearch ? t.text.toLowerCase().includes(transcriptSearch.toLowerCase()) || (t.speaker && t.speaker.toLowerCase().includes(transcriptSearch.toLowerCase())) : true
+  // Translation State
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('en');
+  const [showOriginalWithTranslation, setShowOriginalWithTranslation] = useState<boolean>(false);
+  const [isTranslating, setIsTranslating] = useState<boolean>(false);
+  const [translationError, setTranslationError] = useState<string>('');
+
+  // Summarization State
+  const [summaryComplexity, setSummaryComplexity] = useState<'Executive' | 'Standard' | 'Deep Dive'>('Standard');
+  const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
+  const [summaryData, setSummaryData] = useState<VideoSummaryPayload | null>(
+    video.summaryData || {
+      overview: video.description || `Overview of "${video.title}" covering core architectural milestones.`,
+      keyTopics: [
+        { topic: video.category || 'Overview', timestamp: 0, description: 'Foundational concepts and context introduction.' },
+        { topic: 'Key Technical Demonstration', timestamp: Math.floor((video.duration || 300) * 0.4), description: 'Live performance metrics and benchmarking.' },
+      ],
+      keyEvents: [
+        { timestamp: 0, title: 'Opening Remarks', eventDescription: 'Speaker introduces architectural problem statement.', importance: 'normal' },
+        { timestamp: Math.floor((video.duration || 300) * 0.5), title: 'Core Metric Demonstration', eventDescription: 'Critical proof-of-concept walkthrough.', importance: 'high' },
+        { timestamp: Math.floor((video.duration || 300) * 0.85), title: 'Strategic Synthesis', eventDescription: 'Roadmap and best practices.', importance: 'normal' },
+      ],
+      takeaways: video.keyTakeaways && video.keyTakeaways.length > 0 ? video.keyTakeaways : [
+        'Understand the core principles and design trade-offs.',
+        'Apply high-efficiency streaming patterns in production.',
+      ],
+      readingTimeMinutes: 2,
+      complexityLevel: 'Standard',
+      generatedAt: Date.now(),
+    }
   );
+
+  // Chapter Detection State
+  const [isDetectingChapters, setIsDetectingChapters] = useState<boolean>(false);
+  const [chapterSensitivity, setChapterSensitivity] = useState<'high' | 'medium' | 'standard'>('medium');
+
+  // Copy / Download Feedback
+  const [copiedSummary, setCopiedSummary] = useState(false);
+  const [copiedTranscript, setCopiedTranscript] = useState(false);
+
+  // Auto-scroll transcript ref
+  const activeTranscriptRef = useRef<HTMLDivElement | null>(null);
+
+  // Sync state when video changes
+  useEffect(() => {
+    setSelectedLanguage('en');
+    setTranscriptSearch('');
+    if (video.summaryData) {
+      setSummaryData(video.summaryData);
+    }
+  }, [video.id]);
+
+  // Current active transcript segments (original or translated)
+  const currentTranscript: TranscriptSegment[] =
+    selectedLanguage === 'en'
+      ? video.transcript || []
+      : (video.translations && video.translations[selectedLanguage]) || video.transcript || [];
+
+  // Filtered transcript search
+  const filteredTranscript = currentTranscript.filter((t) => {
+    if (!transcriptSearch) return true;
+    const matchText = t.text.toLowerCase().includes(transcriptSearch.toLowerCase());
+    const matchSpeaker = t.speaker && t.speaker.toLowerCase().includes(transcriptSearch.toLowerCase());
+    return matchText || matchSpeaker;
+  });
+
+  // Handle Translate Request
+  const handleTranslate = async (langCode: string) => {
+    setSelectedLanguage(langCode);
+    if (langCode === 'en') return;
+
+    // Check if already available in video object
+    if (video.translations && video.translations[langCode]) {
+      return;
+    }
+
+    const langObj = SUPPORTED_LANGUAGES.find((l) => l.code === langCode);
+    const targetName = langObj ? langObj.name : langCode;
+
+    setIsTranslating(true);
+    setTranslationError('');
+
+    try {
+      const res = await fetch(`/api/videos/${video.id}/translate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetLanguageCode: langCode,
+          targetLanguageName: targetName,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Translation failed');
+      }
+
+      // Update video object
+      const updatedTranslations = {
+        ...(video.translations || {}),
+        [langCode]: data.segments,
+      };
+      video.translations = updatedTranslations;
+      if (onVideoUpdated) {
+        onVideoUpdated({ ...video, translations: updatedTranslations });
+      }
+    } catch (err: any) {
+      console.error(err);
+      setTranslationError(err.message || 'Translation failed');
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  // Handle Summarize Request
+  const handleGenerateSummary = async (complexity: 'Executive' | 'Standard' | 'Deep Dive') => {
+    setSummaryComplexity(complexity);
+    setIsSummarizing(true);
+
+    try {
+      const res = await fetch(`/api/videos/${video.id}/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ complexity }),
+      });
+
+      const data = await res.json();
+      if (data.success && data.summary) {
+        setSummaryData(data.summary);
+        video.summaryData = data.summary;
+        if (onVideoUpdated) {
+          onVideoUpdated({ ...video, summaryData: data.summary });
+        }
+      }
+    } catch (err) {
+      console.error('Summary error:', err);
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  // Handle Detect Chapters Request
+  const handleDetectChapters = async (sensitivity: 'high' | 'medium' | 'standard') => {
+    setChapterSensitivity(sensitivity);
+    setIsDetectingChapters(true);
+
+    try {
+      const res = await fetch(`/api/videos/${video.id}/detect-chapters`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sensitivity }),
+      });
+
+      const data = await res.json();
+      if (data.success && data.chapters) {
+        video.chapters = data.chapters;
+        if (onVideoUpdated) {
+          onVideoUpdated({ ...video, chapters: data.chapters });
+        }
+      }
+    } catch (err) {
+      console.error('Detect chapters error:', err);
+    } finally {
+      setIsDetectingChapters(false);
+    }
+  };
+
+  // Copy Summary to Clipboard
+  const handleCopySummary = () => {
+    if (!summaryData) return;
+    const text = `## AI Executive Summary: ${video.title}\n\n${summaryData.overview}\n\n### Key Topics:\n${summaryData.keyTopics
+      .map((t) => `- [${formatTime(t.timestamp || 0)}] **${t.topic}**: ${t.description}`)
+      .join('\n')}\n\n### Key Chronological Events:\n${summaryData.keyEvents
+      .map((e) => `- [${formatTime(e.timestamp)}] **${e.title}** (${e.importance}): ${e.eventDescription}`)
+      .join('\n')}\n\n### Strategic Takeaways:\n${summaryData.takeaways.map((t) => `- ${t}`).join('\n')}`;
+
+    navigator.clipboard.writeText(text);
+    setCopiedSummary(true);
+    setTimeout(() => setCopiedSummary(false), 2000);
+  };
+
+  // Download Transcript
+  const handleDownloadTranscript = () => {
+    const text = currentTranscript
+      .map((t) => `[${formatTime(t.startTime)} - ${formatTime(t.endTime)}] ${t.speaker ? t.speaker + ': ' : ''}${t.text}`)
+      .join('\n\n');
+
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${video.title.replace(/[^a-zA-Z0-9]/g, '_')}_transcript_${selectedLanguage}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   // Video notes for current video
   const currentVideoNotes = userNotes.filter((n) => n.videoId === video.id);
@@ -62,22 +287,25 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
   };
 
   return (
-    <div className="flex flex-col rounded-2xl border border-slate-800/80 bg-[#0c1220]/70 backdrop-blur-xl shadow-xl">
+    <div className="flex flex-col rounded-2xl border border-slate-800/80 bg-[#0c1220]/70 backdrop-blur-xl shadow-xl overflow-hidden">
       
       {/* Tabs Header */}
       <div className="flex items-center gap-1 border-b border-slate-800 p-2 overflow-x-auto scrollbar-none">
+        
+        {/* 1. AI Summary Tab */}
         <button
-          onClick={() => setActiveTab('chapters')}
+          onClick={() => setActiveTab('summary')}
           className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all shrink-0 ${
-            activeTab === 'chapters'
-              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 shadow-sm shadow-cyan-500/10'
+            activeTab === 'summary'
+              ? 'bg-gradient-to-r from-cyan-500/20 to-blue-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm shadow-cyan-500/10'
               : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
           }`}
         >
-          <ListTree className="h-4 w-4" />
-          <span>Chapters ({video.chapters?.length || 0})</span>
+          <Sparkles className="h-4 w-4 text-cyan-400" />
+          <span>AI Summary</span>
         </button>
 
+        {/* 2. Live Transcript & Multi-Language Translation Tab */}
         <button
           onClick={() => setActiveTab('transcript')}
           className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all shrink-0 ${
@@ -87,21 +315,23 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
           }`}
         >
           <FileText className="h-4 w-4" />
-          <span>Live Transcript</span>
+          <span>Live Transcript {selectedLanguage !== 'en' && `(${selectedLanguage.toUpperCase()})`}</span>
         </button>
 
+        {/* 3. Chapters & Topic Shifts Tab */}
         <button
-          onClick={() => setActiveTab('takeaways')}
+          onClick={() => setActiveTab('chapters')}
           className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all shrink-0 ${
-            activeTab === 'takeaways'
-              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+            activeTab === 'chapters'
+              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 shadow-sm shadow-cyan-500/10'
               : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
           }`}
         >
-          <Lightbulb className="h-4 w-4" />
-          <span>Key Insights</span>
+          <ListTree className="h-4 w-4" />
+          <span>Chapters & Shifts ({video.chapters?.length || 0})</span>
         </button>
 
+        {/* 4. Visual Scenes */}
         <button
           onClick={() => setActiveTab('scenes')}
           className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all shrink-0 ${
@@ -114,6 +344,7 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
           <span>Visual Scenes</span>
         </button>
 
+        {/* 5. AI Clips */}
         <button
           onClick={() => setActiveTab('clips')}
           className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all shrink-0 ${
@@ -126,6 +357,7 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
           <span>AI Clips ({video.aiGeneratedClips?.length || 0})</span>
         </button>
 
+        {/* 6. Notes & Bookmarks */}
         <button
           onClick={() => setActiveTab('notes')}
           className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all shrink-0 ${
@@ -142,24 +374,339 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
       {/* Tab Content Body */}
       <div className="p-4">
         
-        {/* 1. CHAPTERS TIMELINE */}
-        {activeTab === 'chapters' && (
-          <div className="space-y-3">
-            <div className="text-xs text-slate-400 flex items-center justify-between">
-              <span>Deep Semantic Chapter Breaks</span>
-              <span className="text-[11px] text-cyan-400">Click any chapter to jump video</span>
+        {/* ========================================================= */}
+        {/* 1. AI-POWERED VIDEO SUMMARIZATION TAB                    */}
+        {/* ========================================================= */}
+        {activeTab === 'summary' && (
+          <div className="space-y-4 max-h-[480px] overflow-y-auto pr-1">
+            
+            {/* Top Toolbar: Complexity Selector & Re-Summarize Action */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl border border-slate-800 bg-slate-900/80">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">Depth Level:</span>
+                <div className="flex rounded-lg bg-slate-950 p-0.5 border border-slate-800">
+                  {(['Executive', 'Standard', 'Deep Dive'] as const).map((lvl) => (
+                    <button
+                      key={lvl}
+                      onClick={() => handleGenerateSummary(lvl)}
+                      className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all ${
+                        summaryComplexity === lvl
+                          ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {lvl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleGenerateSummary(summaryComplexity)}
+                  disabled={isSummarizing}
+                  className="flex items-center gap-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/30 transition-colors disabled:opacity-50"
+                >
+                  <RotateCw className={`h-3 w-3 ${isSummarizing ? 'animate-spin' : ''}`} />
+                  <span>{isSummarizing ? 'Synthesizing with Gemini...' : 'Regenerate'}</span>
+                </button>
+
+                <button
+                  onClick={handleCopySummary}
+                  className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-slate-700 transition-colors"
+                >
+                  {copiedSummary ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                  <span>{copiedSummary ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
             </div>
 
-            <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1">
+            {/* Overview Card */}
+            <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-wider">
+                  <Sparkles className="h-4 w-4" /> AI Executive Overview
+                </div>
+                {summaryData?.readingTimeMinutes && (
+                  <span className="rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] font-mono text-cyan-300 border border-cyan-500/20">
+                    ~{summaryData.readingTimeMinutes} min read
+                  </span>
+                )}
+              </div>
+              <p className="text-xs sm:text-sm text-slate-200 leading-relaxed font-normal">
+                {summaryData?.overview || video.description}
+              </p>
+            </div>
+
+            {/* Key Topics & Concepts */}
+            {summaryData?.keyTopics && summaryData.keyTopics.length > 0 && (
+              <div className="space-y-2.5">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <Layers className="h-3.5 w-3.5 text-cyan-400" /> Key Thematic Pillars
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {summaryData.keyTopics.map((topic, i) => (
+                    <div
+                      key={i}
+                      className="rounded-xl border border-slate-800 bg-slate-900/70 p-3 space-y-1.5 hover:border-slate-700 transition-all"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-100">{topic.topic}</span>
+                        {topic.timestamp !== undefined && (
+                          <button
+                            onClick={() => onSeek(topic.timestamp!)}
+                            className="flex items-center gap-1 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-cyan-400 hover:bg-slate-700 transition-colors shrink-0"
+                          >
+                            <Clock className="h-2.5 w-2.5" /> {formatTime(topic.timestamp)}
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-300 leading-relaxed">{topic.description}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Significant Chronological Events Breakdown */}
+            {summaryData?.keyEvents && summaryData.keyEvents.length > 0 && (
+              <div className="space-y-2.5">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <TrendingUp className="h-3.5 w-3.5 text-emerald-400" /> Chronological Milestone Timeline
+                </h4>
+                <div className="space-y-2">
+                  {summaryData.keyEvents.map((evt, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => onSeek(evt.timestamp)}
+                      className="group cursor-pointer rounded-xl border border-slate-800 bg-slate-900/60 p-3 hover:border-cyan-500/50 hover:bg-slate-800/60 transition-all flex items-start justify-between gap-3 text-xs"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-slate-100 group-hover:text-cyan-300 transition-colors truncate">
+                            {evt.title}
+                          </span>
+                          {evt.importance === 'high' && (
+                            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300 border border-emerald-500/30">
+                              HIGH IMPACT
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-slate-300 leading-relaxed">{evt.eventDescription}</p>
+                      </div>
+
+                      <div className="flex items-center gap-1 font-mono text-[11px] text-cyan-400 bg-slate-900 px-2 py-1 rounded-md shrink-0 border border-slate-800">
+                        <Play className="h-2.5 w-2.5 fill-current" /> {formatTime(evt.timestamp)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Strategic Actionable Takeaways */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> Strategic Actionable Takeaways
+              </h4>
+              <div className="space-y-2">
+                {(summaryData?.takeaways || video.keyTakeaways || []).map((point, idx) => (
+                  <div key={idx} className="flex items-start gap-2.5 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-200">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <span className="leading-relaxed">{point}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* 2. REAL-TIME TRANSCRIPT & MULTI-LANGUAGE TRANSLATION     */}
+        {/* ========================================================= */}
+        {activeTab === 'transcript' && (
+          <div className="space-y-3.5">
+            
+            {/* Language Selection & Translation Control Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl border border-slate-800 bg-slate-900/80">
+              
+              <div className="flex items-center gap-2 flex-1 min-w-[240px]">
+                <Globe className="h-4 w-4 text-cyan-400 shrink-0" />
+                <span className="text-xs font-medium text-slate-300 shrink-0">Language:</span>
+                <select
+                  value={selectedLanguage}
+                  onChange={(e) => handleTranslate(e.target.value)}
+                  className="rounded-lg border border-slate-700 bg-slate-950 py-1 px-2.5 text-xs text-slate-200 focus:border-cyan-500 focus:outline-none"
+                >
+                  {SUPPORTED_LANGUAGES.map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {lang.flag} {lang.name}
+                    </option>
+                  ))}
+                </select>
+
+                {selectedLanguage !== 'en' && (
+                  <button
+                    onClick={() => setShowOriginalWithTranslation(!showOriginalWithTranslation)}
+                    className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold border transition-all ${
+                      showOriginalWithTranslation
+                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                        : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'
+                    }`}
+                  >
+                    <ArrowRightLeft className="h-3 w-3" />
+                    <span>Dual View</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleDownloadTranscript}
+                  className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-slate-700 transition-colors"
+                >
+                  <Download className="h-3 w-3 text-slate-400" />
+                  <span>Export TXT</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Translation Loading State */}
+            {isTranslating && (
+              <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-3 text-xs text-cyan-300 flex items-center gap-2 animate-pulse">
+                <RotateCw className="h-4 w-4 animate-spin text-cyan-400" />
+                <span>Translating synchronized transcript into {SUPPORTED_LANGUAGES.find((l) => l.code === selectedLanguage)?.name}...</span>
+              </div>
+            )}
+
+            {/* Translation Error */}
+            {translationError && (
+              <div className="rounded-xl border border-red-500/30 bg-red-950/40 p-3 text-xs text-red-300 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-red-400" />
+                <span>{translationError}</span>
+              </div>
+            )}
+
+            {/* Transcript Search Input */}
+            <div className="relative">
+              <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
+              <input
+                type="text"
+                value={transcriptSearch}
+                onChange={(e) => setTranscriptSearch(e.target.value)}
+                placeholder="Search words inside transcript..."
+                className="w-full rounded-xl border border-slate-700/80 bg-slate-900/90 py-1.5 pl-9 pr-3 text-xs text-slate-100 placeholder-slate-400 focus:border-cyan-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Transcript Lines Feed */}
+            <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+              {filteredTranscript.length === 0 ? (
+                <div className="py-8 text-center text-xs text-slate-400">
+                  No matching transcript lines found.
+                </div>
+              ) : (
+                filteredTranscript.map((item, idx) => {
+                  const isActive = currentTime >= item.startTime && currentTime <= item.endTime;
+                  const origItem = video.transcript?.[idx];
+
+                  return (
+                    <div
+                      key={item.id || idx}
+                      onClick={() => onSeek(item.startTime)}
+                      ref={isActive ? activeTranscriptRef : null}
+                      className={`cursor-pointer rounded-xl p-3 transition-all text-xs border ${
+                        isActive
+                          ? 'border-cyan-500/80 bg-cyan-950/40 text-slate-100 shadow-md shadow-cyan-950/50'
+                          : 'border-slate-800/80 bg-slate-900/50 hover:bg-slate-800/60 text-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-1.5">
+                        <span className="font-semibold text-cyan-400 flex items-center gap-1.5">
+                          {isActive && <Volume2 className="h-3 w-3 text-cyan-400 animate-pulse" />}
+                          {item.speaker || 'Speaker'}
+                        </span>
+                        <span className={`rounded px-1.5 py-0.5 text-xs ${isActive ? 'bg-cyan-500 text-slate-950 font-bold' : 'bg-slate-800 text-cyan-300'}`}>
+                          {formatTime(item.startTime)}
+                        </span>
+                      </div>
+
+                      <p className={`leading-relaxed ${isActive ? 'font-semibold text-cyan-100 text-sm' : 'text-slate-200'}`}>
+                        {item.text}
+                      </p>
+
+                      {/* Dual View: Show original beneath translation */}
+                      {showOriginalWithTranslation && selectedLanguage !== 'en' && origItem && (
+                        <div className="mt-1.5 pt-1.5 border-t border-slate-800 text-[11px] text-slate-400 italic">
+                          <span className="text-[10px] uppercase font-mono text-slate-500 mr-1.5">EN:</span>
+                          {origItem.text}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* 3. CHAPTERS & TOPIC SHIFTS DETECTION                     */}
+        {/* ========================================================= */}
+        {activeTab === 'chapters' && (
+          <div className="space-y-3.5">
+            
+            {/* Top Toolbar: Topic Shift Sensitivity & Re-detection */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl border border-slate-800 bg-slate-900/80">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">Shift Sensitivity:</span>
+                <div className="flex rounded-lg bg-slate-950 p-0.5 border border-slate-800">
+                  {(['standard', 'medium', 'high'] as const).map((lvl) => (
+                    <button
+                      key={lvl}
+                      onClick={() => handleDetectChapters(lvl)}
+                      className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all capitalize ${
+                        chapterSensitivity === lvl
+                          ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {lvl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleDetectChapters(chapterSensitivity)}
+                disabled={isDetectingChapters}
+                className="flex items-center gap-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/30 transition-colors disabled:opacity-50"
+              >
+                <RotateCw className={`h-3 w-3 ${isDetectingChapters ? 'animate-spin' : ''}`} />
+                <span>{isDetectingChapters ? 'Detecting Shifts...' : 'Detect Shifts'}</span>
+              </button>
+            </div>
+
+            <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
               {video.chapters?.map((ch, idx) => {
                 const isActive = currentTime >= ch.startTime && currentTime <= ch.endTime;
+                
+                const shiftColor =
+                  ch.topicShiftType === 'technical_deep_dive'
+                    ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
+                    : ch.topicShiftType === 'scene_change'
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                    : ch.topicShiftType === 'conclusion'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                    : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30';
+
                 return (
                   <div
-                    key={ch.id}
+                    key={ch.id || idx}
                     onClick={() => onSeek(ch.startTime)}
                     className={`group cursor-pointer rounded-xl p-3 border transition-all ${
                       isActive
-                        ? 'border-cyan-500/60 bg-cyan-950/40 shadow-md shadow-cyan-950/50'
+                        ? 'border-cyan-500/80 bg-cyan-950/40 shadow-md shadow-cyan-950/50'
                         : 'border-slate-800/80 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-800/60'
                     }`}
                   >
@@ -187,12 +734,23 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
                       {ch.summary}
                     </p>
 
-                    {ch.keyVisual && (
-                      <div className="mt-2 pl-8 flex items-center gap-2 text-[11px] text-slate-400">
-                        <Eye className="h-3 w-3 text-slate-500" />
-                        <span className="italic text-slate-400">Key Visual: {ch.keyVisual}</span>
-                      </div>
-                    )}
+                    <div className="mt-2.5 pl-8 flex flex-wrap items-center gap-2 text-[11px]">
+                      {ch.topicShiftType && (
+                        <span className={`rounded-md px-2 py-0.5 text-[10px] font-semibold border ${shiftColor}`}>
+                          Shift: {ch.topicShiftType.replace(/_/g, ' ').toUpperCase()}
+                        </span>
+                      )}
+                      {ch.confidence && (
+                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400 font-mono">
+                          Confidence: {Math.round(ch.confidence * 100)}%
+                        </span>
+                      )}
+                      {ch.keyVisual && (
+                        <span className="text-[11px] text-slate-400 italic">
+                          Anchor: {ch.keyVisual}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -200,110 +758,9 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
           </div>
         )}
 
-        {/* 2. SYNCHRONIZED TRANSCRIPT */}
-        {activeTab === 'transcript' && (
-          <div className="space-y-3">
-            {/* Transcript Search Input */}
-            <div className="relative">
-              <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
-              <input
-                type="text"
-                value={transcriptSearch}
-                onChange={(e) => setTranscriptSearch(e.target.value)}
-                placeholder="Search words inside transcript..."
-                className="w-full rounded-xl border border-slate-700/80 bg-slate-900/90 py-1.5 pl-9 pr-3 text-xs text-slate-100 placeholder-slate-400 focus:border-cyan-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-              {filteredTranscript.length === 0 ? (
-                <div className="py-8 text-center text-xs text-slate-400">
-                  No matching transcript lines found.
-                </div>
-              ) : (
-                filteredTranscript.map((item) => {
-                  const isActive = currentTime >= item.startTime && currentTime <= item.endTime;
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => onSeek(item.startTime)}
-                      className={`cursor-pointer rounded-xl p-2.5 transition-all text-xs border ${
-                        isActive
-                          ? 'border-cyan-500/60 bg-cyan-950/40 text-slate-100 shadow-sm'
-                          : 'border-transparent hover:bg-slate-800/60 text-slate-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-1">
-                        <span className="font-semibold text-cyan-400/90">{item.speaker || 'Speaker'}</span>
-                        <span className="rounded bg-slate-800/80 px-1.5 py-0.5 text-cyan-300">{formatTime(item.startTime)}</span>
-                      </div>
-                      <p className={`leading-relaxed ${isActive ? 'font-medium text-cyan-200' : 'text-slate-300'}`}>
-                        {item.text}
-                      </p>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* 3. KEY INSIGHTS & TAKEAWAYS */}
-        {activeTab === 'takeaways' && (
-          <div className="space-y-4 max-h-[460px] overflow-y-auto pr-1">
-            {/* Executive Abstract */}
-            <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-3.5">
-              <div className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-wider mb-1.5">
-                <Sparkles className="h-4 w-4" /> Executive Abstract
-              </div>
-              <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
-                {video.description}
-              </p>
-            </div>
-
-            {/* Core Takeaways */}
-            <div className="space-y-2">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Core Conceptual Anchors
-              </h4>
-              <div className="space-y-2">
-                {video.keyTakeaways?.map((point, idx) => (
-                  <div key={idx} className="flex items-start gap-2.5 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-200">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
-                    <span className="leading-relaxed">{point}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Topic Affinity Distribution */}
-            {video.topicAffinities && (
-              <div className="space-y-2 pt-2 border-t border-slate-800">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Topic Affinity Weights
-                </h4>
-                <div className="space-y-2">
-                  {video.topicAffinities.map((aff, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex justify-between text-xs text-slate-300">
-                        <span>{aff.topic}</span>
-                        <span className="font-mono text-cyan-400">{Math.round(aff.weight * 100)}%</span>
-                      </div>
-                      <div className="h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500"
-                          style={{ width: `${aff.weight * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 4. VISUAL SCENES BREAKDOWN */}
+        {/* ========================================================= */}
+        {/* 4. VISUAL SCENES BREAKDOWN                                */}
+        {/* ========================================================= */}
         {activeTab === 'scenes' && (
           <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
             <div className="text-xs text-slate-400">
@@ -347,7 +804,9 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
           </div>
         )}
 
-        {/* 5. AI CLIPS & SHORTS */}
+        {/* ========================================================= */}
+        {/* 5. AI CLIPS & SHORTS                                      */}
+        {/* ========================================================= */}
         {activeTab === 'clips' && (
           <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
             <div className="text-xs text-slate-400 flex items-center justify-between">
@@ -397,7 +856,9 @@ export const VideoIntelligenceTabs: React.FC<VideoIntelligenceTabsProps> = ({
           </div>
         )}
 
-        {/* 6. TIMECODED NOTES & BOOKMARKS */}
+        {/* ========================================================= */}
+        {/* 6. TIMECODED NOTES & BOOKMARKS                            */}
+        {/* ========================================================= */}
         {activeTab === 'notes' && (
           <div className="space-y-4 max-h-[460px] overflow-y-auto pr-1">
             {/* Create Note Input */}

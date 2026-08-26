@@ -20,9 +20,11 @@ import {
   Tv,
   MessageSquarePlus,
   HelpCircle,
-  Scissors
+  Scissors,
+  Users,
+  Radio,
 } from 'lucide-react';
-import { VideoItem, ChapterMarker } from '../types';
+import { VideoItem, ChapterMarker, WatchPartyRoom, PartyReaction } from '../types';
 
 interface VideoPlayerProps {
   video: VideoItem;
@@ -38,6 +40,10 @@ interface VideoPlayerProps {
   theaterMode: boolean;
   onToggleTheaterMode: () => void;
   onOpenClipExtractor?: () => void;
+  activeWatchRoom?: WatchPartyRoom | null;
+  onOpenWatchParty?: () => void;
+  floatingReactions?: PartyReaction[];
+  onPlaybackStateChange?: (isPlaying: boolean, currentTime: number) => void;
 }
 
 const SPEED_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
@@ -57,6 +63,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   theaterMode,
   onToggleTheaterMode,
   onOpenClipExtractor,
+  activeWatchRoom,
+  onOpenWatchParty,
+  floatingReactions = [],
+  onPlaybackStateChange,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -105,9 +115,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     if (videoRef.current.paused) {
       videoRef.current.play().catch(() => {});
       setIsPlaying(true);
+      if (onPlaybackStateChange) onPlaybackStateChange(true, videoRef.current.currentTime);
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
+      if (onPlaybackStateChange) onPlaybackStateChange(false, videoRef.current.currentTime);
     }
   };
 
@@ -117,6 +129,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const nextTime = Math.max(0, Math.min(duration, videoRef.current.currentTime + seconds));
       videoRef.current.currentTime = nextTime;
       onTimeUpdate(nextTime);
+      if (onPlaybackStateChange) onPlaybackStateChange(isPlaying, nextTime);
     }
   };
 
@@ -128,6 +141,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     if (videoRef.current) {
       videoRef.current.currentTime = newTime;
       onTimeUpdate(newTime);
+      if (onPlaybackStateChange) onPlaybackStateChange(isPlaying, newTime);
     }
   };
 
@@ -236,11 +250,44 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
         )}
 
+        {/* Watch Party Floating Live Reactions Layer */}
+        {floatingReactions.length > 0 && (
+          <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
+            {floatingReactions.map((reaction) => (
+              <div
+                key={reaction.id}
+                className="absolute text-3xl animate-bounce transition-all duration-1000"
+                style={{
+                  left: `${(reaction.timestamp % 80) + 10}%`,
+                  bottom: '20%',
+                  opacity: 0.9,
+                }}
+              >
+                {reaction.emoji}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Current Active Chapter Banner Overlay (Top Left) */}
         {currentChapter && (
           <div className="pointer-events-none absolute top-4 left-4 z-20 flex items-center gap-2 rounded-xl bg-slate-950/80 px-3 py-1.5 backdrop-blur-md border border-cyan-500/30 text-xs text-slate-200">
             <span className="h-2 w-2 rounded-full bg-cyan-400 animate-ping" />
             <span className="font-semibold text-cyan-400">{currentChapter.title}</span>
+          </div>
+        )}
+
+        {/* Live Watch Party Indicator Badge (Top Right) */}
+        {activeWatchRoom && (
+          <div
+            onClick={onOpenWatchParty}
+            className="cursor-pointer absolute top-4 right-4 z-20 flex items-center gap-2 rounded-xl bg-emerald-950/90 px-3 py-1.5 backdrop-blur-md border border-emerald-500/40 text-xs text-emerald-300 shadow-lg hover:scale-105 transition-transform"
+          >
+            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-bold">PARTY: {activeWatchRoom.name}</span>
+            <span className="rounded bg-emerald-900/80 px-1.5 py-0.5 text-[10px] font-mono font-bold">
+              {activeWatchRoom.participants.length}
+            </span>
           </div>
         )}
 
@@ -359,7 +406,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </div>
             </div>
 
-            {/* Right Controls: Bookmark current time, Speed/Quality, Fullscreen */}
+            {/* Right Controls: Bookmark current time, Watch Party, Speed/Quality, Fullscreen */}
             <div className="relative flex items-center gap-2">
               
               {/* Quick Bookmark at Current Time */}
@@ -371,6 +418,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 <Bookmark className="h-4 w-4 text-cyan-400" />
                 <span className="hidden sm:inline">Mark</span>
               </button>
+
+              {/* Watch Party Trigger */}
+              {onOpenWatchParty && (
+                <button
+                  onClick={onOpenWatchParty}
+                  title="Collaborative Watch Party & Live Sync"
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-all ${
+                    activeWatchRoom
+                      ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-sm'
+                      : 'text-slate-300 hover:bg-white/10 hover:text-emerald-300'
+                  }`}
+                >
+                  <Users className="h-4 w-4 text-emerald-400" />
+                  <span className="hidden sm:inline">{activeWatchRoom ? 'Party (Live)' : 'Party'}</span>
+                </button>
+              )}
 
               {/* Settings / Speed Popover Toggle */}
               <div className="relative">
@@ -475,7 +538,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             </div>
           </div>
 
-          {/* Action Buttons: Like, Bookmark, Share, Clip Generator */}
+          {/* Action Buttons: Like, Bookmark, Share, Watch Party, Clip Generator */}
           <div className="flex flex-wrap items-center gap-2">
             
             {/* Like Button */}
@@ -503,6 +566,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               {isBookmarked ? <BookmarkCheck className="h-4 w-4 text-cyan-400" /> : <Bookmark className="h-4 w-4" />}
               <span>{isBookmarked ? 'Saved' : 'Save'}</span>
             </button>
+
+            {/* Watch Party Button */}
+            {onOpenWatchParty && (
+              <button
+                onClick={onOpenWatchParty}
+                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 px-3.5 py-2 text-xs font-semibold text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 transition-all"
+              >
+                <Users className="h-4 w-4 text-emerald-400" />
+                <span>{activeWatchRoom ? 'Watch Party (Live)' : 'Watch Party'}</span>
+              </button>
+            )}
 
             {/* Share Timestamp */}
             <button

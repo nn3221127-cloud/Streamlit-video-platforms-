@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { VideoPlayer } from './components/VideoPlayer';
 import { VideoIntelligenceTabs } from './components/VideoIntelligenceTabs';
@@ -8,8 +8,17 @@ import { MultimodalIngestModal } from './components/MultimodalIngestModal';
 import { VoiceQueryModal } from './components/VoiceQueryModal';
 import { CacheTelemetryModal } from './components/CacheTelemetryModal';
 import { ClipExtractorModal } from './components/ClipExtractorModal';
-import { VideoItem, UserState, RecommendationRail, AIClip } from './types';
-import { Sparkles, Tv, Layers } from 'lucide-react';
+import { AuthModal } from './components/AuthModal';
+import { WatchPartyModal } from './components/WatchPartyModal';
+import {
+  VideoItem,
+  UserState,
+  RecommendationRail,
+  AIClip,
+  UserAccount,
+  WatchPartyRoom,
+  PartyReaction,
+} from './types';
 
 export default function App() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
@@ -24,39 +33,68 @@ export default function App() {
     customCategories: [],
     preferences: { playbackSpeed: 1.0, quality: 'Auto', autoplayNext: true, theme: 'dark' },
   });
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [rails, setRails] = useState<RecommendationRail[]>([]);
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [theaterMode, setTheaterMode] = useState<boolean>(false);
+
+  // Watch Party & Real-Time Collaboration State
+  const [activeWatchRoom, setActiveWatchRoom] = useState<WatchPartyRoom | null>(null);
+  const [floatingReactions, setFloatingReactions] = useState<PartyReaction[]>([]);
+  const lastSyncTimestampRef = useRef<number>(0);
 
   // Modals state
   const [isIngestOpen, setIsIngestOpen] = useState(false);
   const [isVoiceQueryOpen, setIsVoiceQueryOpen] = useState(false);
   const [isCacheStatsOpen, setIsCacheStatsOpen] = useState(false);
   const [isClipExtractorOpen, setIsClipExtractorOpen] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isWatchPartyOpen, setIsWatchPartyOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // 1. Initial Data Fetch
+  // 1. Initial Data Fetch & Auth Check
   useEffect(() => {
     const initApp = async () => {
       try {
         setIsLoading(true);
+
+        // Check Auth token
+        const token = localStorage.getItem('streamintel_auth_token');
+        if (token) {
+          try {
+            const authRes = await fetch('/api/auth/me', {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const authData = await authRes.json();
+            if (authData.success && authData.user) {
+              setCurrentUser(authData.user);
+            }
+          } catch (e) {
+            console.error('Auth verification error:', e);
+          }
+        }
+
         // Fetch videos
         const vRes = await fetch('/api/videos');
         const vData = await vRes.json();
 
         // Fetch user state
-        const sRes = await fetch('/api/state');
+        const sRes = await fetch('/api/state', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
         const sData = await sRes.json();
 
         if (vData.success && vData.videos && vData.videos.length > 0) {
           setVideos(vData.videos);
-          
+
           // Check if URL has ?v= parameter
           const urlParams = new URLSearchParams(window.location.search);
           const paramVideoId = urlParams.get('v');
           const paramTime = urlParams.get('t');
 
-          const initialVid = (paramVideoId && vData.videos.find((v: VideoItem) => v.id === paramVideoId)) || vData.videos[0];
+          const initialVid =
+            (paramVideoId && vData.videos.find((v: VideoItem) => v.id === paramVideoId)) ||
+            vData.videos[0];
           setActiveVideo(initialVid);
 
           if (paramTime) {
@@ -82,7 +120,9 @@ export default function App() {
 
     const fetchRecs = async () => {
       try {
-        const res = await fetch(`/api/recommendations?videoId=${encodeURIComponent(activeVideo.id)}`);
+        const res = await fetch(
+          `/api/recommendations?videoId=${encodeURIComponent(activeVideo.id)}`
+        );
         const data = await res.json();
         if (data.success && data.rails) {
           setRails(data.rails);
@@ -95,9 +135,13 @@ export default function App() {
     fetchRecs();
 
     // Record watch history
+    const token = localStorage.getItem('streamintel_auth_token');
     fetch('/api/history', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({
         videoId: activeVideo.id,
         progressSeconds: 0,
@@ -105,28 +149,149 @@ export default function App() {
     }).catch(() => {});
   }, [activeVideo?.id]);
 
+  // 3. Real-time Watch Party synchronization loop
+  useEffect(() => {
+    if (!activeWatchRoom) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/rooms/${activeWatchRoom.roomId}`);
+        const data = await res.json();
+        if (data.success && data.room) {
+          setActiveWatchRoom(data.room);
+
+          // Collect new floating reactions
+          if (data.room.reactions && data.room.reactions.length > 0) {
+            const recent = data.room.reactions.filter(
+              (r: PartyReaction) => Date.now() - r.timestamp < 3500
+            );
+            setFloatingReactions(recent);
+          }
+
+          // If room video is different from current active video, sync it
+          if (activeVideo && data.room.videoId !== activeVideo.id) {
+            const targetVid = videos.find((v) => v.id === data.room.videoId);
+            if (targetVid) {
+              setActiveVideo(targetVid);
+            }
+          }
+
+          // If time drift is large (> 3 seconds), sync playback time
+          if (
+            data.room.playbackState &&
+            Math.abs(data.room.playbackState.currentTime - currentTime) > 3.5
+          ) {
+            setSeekToTime(data.room.playbackState.currentTime);
+          }
+        }
+      } catch (e) {
+        console.error('Watch party sync error:', e);
+      }
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [activeWatchRoom?.roomId, activeVideo?.id, currentTime, videos]);
+
   // Handle Video Selection
-  const handleSelectVideo = useCallback((video: VideoItem, initialSeekTime?: number) => {
-    setActiveVideo(video);
-    setCurrentTime(initialSeekTime || 0);
-    if (initialSeekTime !== undefined) {
-      setSeekToTime(initialSeekTime);
-    } else {
-      setSeekToTime(0);
-    }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
+  const handleSelectVideo = useCallback(
+    (video: VideoItem, initialSeekTime?: number) => {
+      setActiveVideo(video);
+      setCurrentTime(initialSeekTime || 0);
+      if (initialSeekTime !== undefined) {
+        setSeekToTime(initialSeekTime);
+      } else {
+        setSeekToTime(0);
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      // If active in a watch party, update the room video
+      if (activeWatchRoom) {
+        fetch(`/api/rooms/${activeWatchRoom.roomId}/sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            currentTime: initialSeekTime || 0,
+            isPlaying: true,
+          }),
+        }).catch(() => {});
+      }
+    },
+    [activeWatchRoom]
+  );
 
   // Seek handler from transcript/chapters
   const handleSeek = (time: number) => {
     setSeekToTime(time);
+    if (activeWatchRoom) {
+      fetch(`/api/rooms/${activeWatchRoom.roomId}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentTime: time,
+          isPlaying: true,
+        }),
+      }).catch(() => {});
+    }
+  };
+
+  // Playback state change from player
+  const handlePlaybackStateChange = (isPlaying: boolean, currentSec: number) => {
+    if (!activeWatchRoom) return;
+    const now = Date.now();
+    if (now - lastSyncTimestampRef.current > 1000) {
+      lastSyncTimestampRef.current = now;
+      fetch(`/api/rooms/${activeWatchRoom.roomId}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentTime: Math.round(currentSec),
+          isPlaying,
+        }),
+      }).catch(() => {});
+    }
+  };
+
+  // Send Live Party Reaction
+  const handleSendPartyReaction = async (emoji: string) => {
+    if (!activeWatchRoom) return;
+    try {
+      const token = localStorage.getItem('streamintel_auth_token');
+      await fetch(`/api/rooms/${activeWatchRoom.roomId}/reaction`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          emoji,
+          userName: currentUser?.name || 'Viewer',
+        }),
+      });
+
+      // Optimistically add to floating reactions
+      const newReact: PartyReaction = {
+        id: `react_${Date.now()}_${Math.random()}`,
+        userId: currentUser?.id || 'viewer',
+        userName: currentUser?.name || 'Viewer',
+        emoji,
+        timestamp: Date.now(),
+        x: Math.floor(Math.random() * 80) + 10,
+      };
+      setFloatingReactions((prev) => [...prev, newReact]);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   // Toggle Like
   const handleToggleLike = async () => {
     if (!activeVideo) return;
     try {
-      const res = await fetch(`/api/like/${activeVideo.id}`, { method: 'POST' });
+      const token = localStorage.getItem('streamintel_auth_token');
+      const res = await fetch(`/api/like/${activeVideo.id}`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const data = await res.json();
       if (data.success) {
         setUserState((prev) => ({
@@ -135,8 +300,9 @@ export default function App() {
             ? [...prev.likedVideoIds, activeVideo.id]
             : prev.likedVideoIds.filter((id) => id !== activeVideo.id),
         }));
-        // Update like count in current video
-        setActiveVideo((prev) => prev ? { ...prev, likes: prev.likes + (data.isLiked ? 1 : -1) } : null);
+        setActiveVideo((prev) =>
+          prev ? { ...prev, likes: prev.likes + (data.isLiked ? 1 : -1) } : null
+        );
       }
     } catch (err) {
       console.error('Toggle like failed:', err);
@@ -146,7 +312,9 @@ export default function App() {
   // Toggle Video Bookmark
   const handleToggleBookmark = () => {
     if (!activeVideo) return;
-    const isCurrentlySaved = userState.bookmarkedTimestamps.some((b) => b.videoId === activeVideo.id);
+    const isCurrentlySaved = userState.bookmarkedTimestamps.some(
+      (b) => b.videoId === activeVideo.id
+    );
     if (isCurrentlySaved) {
       const bm = userState.bookmarkedTimestamps.find((b) => b.videoId === activeVideo.id);
       if (bm) handleDeleteBookmark(bm.id);
@@ -159,9 +327,13 @@ export default function App() {
   const handleAddBookmarkAtTime = async (timestamp: number) => {
     if (!activeVideo) return;
     try {
+      const token = localStorage.getItem('streamintel_auth_token');
       const res = await fetch('/api/bookmark', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           videoId: activeVideo.id,
           timestamp,
@@ -183,7 +355,11 @@ export default function App() {
   // Delete Bookmark
   const handleDeleteBookmark = async (id: string) => {
     try {
-      const res = await fetch(`/api/bookmark/${id}`, { method: 'DELETE' });
+      const token = localStorage.getItem('streamintel_auth_token');
+      const res = await fetch(`/api/bookmark/${id}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const data = await res.json();
       if (data.success) {
         setUserState((prev) => ({
@@ -200,9 +376,13 @@ export default function App() {
   const handleAddNote = async (text: string, timestamp: number) => {
     if (!activeVideo) return;
     try {
+      const token = localStorage.getItem('streamintel_auth_token');
       const res = await fetch('/api/notes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           videoId: activeVideo.id,
           text,
@@ -224,7 +404,11 @@ export default function App() {
   // Delete User Note
   const handleDeleteNote = async (id: string) => {
     try {
-      const res = await fetch(`/api/notes/${id}`, { method: 'DELETE' });
+      const token = localStorage.getItem('streamintel_auth_token');
+      const res = await fetch(`/api/notes/${id}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const data = await res.json();
       if (data.success) {
         setUserState((prev) => ({
@@ -245,23 +429,36 @@ export default function App() {
     setSeekToTime(0);
   };
 
+  // On video updated (e.g. from translation, summary, chapter shifts)
+  const handleVideoUpdated = (updatedVideo: VideoItem) => {
+    setActiveVideo(updatedVideo);
+    setVideos((prev) => prev.map((v) => (v.id === updatedVideo.id ? updatedVideo : v)));
+  };
+
   // On AI clip created
   const handleClipCreated = (clip: AIClip) => {
     if (!activeVideo) return;
     const updatedClips = [...(activeVideo.aiGeneratedClips || []), clip];
-    setActiveVideo({ ...activeVideo, aiGeneratedClips: updatedClips });
+    const updatedVideo = { ...activeVideo, aiGeneratedClips: updatedClips };
+    handleVideoUpdated(updatedVideo);
   };
 
   // Check if active video is liked/bookmarked
-  const isCurrentVideoLiked = activeVideo ? userState.likedVideoIds.includes(activeVideo.id) : false;
-  const isCurrentVideoBookmarked = activeVideo ? userState.bookmarkedTimestamps.some((b) => b.videoId === activeVideo.id) : false;
+  const isCurrentVideoLiked = activeVideo
+    ? userState.likedVideoIds.includes(activeVideo.id)
+    : false;
+  const isCurrentVideoBookmarked = activeVideo
+    ? userState.bookmarkedTimestamps.some((b) => b.videoId === activeVideo.id)
+    : false;
 
   if (isLoading || !activeVideo) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#070b14] text-white">
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
-          <span className="text-xs font-semibold text-slate-300">Initializing StreamIntel Studio Neural Mesh...</span>
+          <span className="text-xs font-semibold text-slate-300">
+            Initializing StreamIntel Studio Neural Mesh...
+          </span>
         </div>
       </div>
     );
@@ -269,7 +466,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#070b14] text-slate-100 selection:bg-cyan-500 selection:text-slate-950 font-sans antialiased">
-      
       {/* Top Navigation */}
       <Navbar
         onOpenIngest={() => setIsIngestOpen(true)}
@@ -280,11 +476,14 @@ export default function App() {
         onToggleTheaterMode={() => setTheaterMode(!theaterMode)}
         activeCategory={activeCategory}
         onSelectCategory={(cat) => setActiveCategory(cat)}
+        currentUser={currentUser}
+        onOpenAuthModal={() => setIsAuthOpen(true)}
+        onOpenWatchParty={() => setIsWatchPartyOpen(true)}
+        activeWatchRoom={activeWatchRoom}
       />
 
       {/* Main Studio Viewport */}
       <main className="mx-auto max-w-7xl px-3 sm:px-6 py-5">
-        
         {/* Cinema / Theater Mode View */}
         {theaterMode ? (
           <div className="space-y-6">
@@ -304,6 +503,10 @@ export default function App() {
                 theaterMode={theaterMode}
                 onToggleTheaterMode={() => setTheaterMode(!theaterMode)}
                 onOpenClipExtractor={() => setIsClipExtractorOpen(true)}
+                activeWatchRoom={activeWatchRoom}
+                onOpenWatchParty={() => setIsWatchPartyOpen(true)}
+                floatingReactions={floatingReactions}
+                onPlaybackStateChange={handlePlaybackStateChange}
               />
             </div>
 
@@ -318,6 +521,7 @@ export default function App() {
                 onAddNote={handleAddNote}
                 onDeleteNote={handleDeleteNote}
                 onDeleteBookmark={handleDeleteBookmark}
+                onVideoUpdated={handleVideoUpdated}
               />
               <VideoCopilotChat
                 video={activeVideo}
@@ -330,7 +534,6 @@ export default function App() {
         ) : (
           /* Standard Pro Layout: 8-Column Player & Tabs, 4-Column Copilot Sidebar */
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            
             {/* Primary Left Workstage (Cols 1-8) */}
             <div className="lg:col-span-8 space-y-6">
               <VideoPlayer
@@ -347,6 +550,10 @@ export default function App() {
                 theaterMode={theaterMode}
                 onToggleTheaterMode={() => setTheaterMode(!theaterMode)}
                 onOpenClipExtractor={() => setIsClipExtractorOpen(true)}
+                activeWatchRoom={activeWatchRoom}
+                onOpenWatchParty={() => setIsWatchPartyOpen(true)}
+                floatingReactions={floatingReactions}
+                onPlaybackStateChange={handlePlaybackStateChange}
               />
 
               <VideoIntelligenceTabs
@@ -358,6 +565,7 @@ export default function App() {
                 onAddNote={handleAddNote}
                 onDeleteNote={handleDeleteNote}
                 onDeleteBookmark={handleDeleteBookmark}
+                onVideoUpdated={handleVideoUpdated}
               />
             </div>
 
@@ -395,7 +603,6 @@ export default function App() {
         isOpen={isVoiceQueryOpen}
         onClose={() => setIsVoiceQueryOpen(false)}
         onTranscriptSubmitted={(query) => {
-          // Send to Copilot by updating query
           console.log('Voice query submitted:', query);
         }}
       />
@@ -415,6 +622,38 @@ export default function App() {
         onSeek={handleSeek}
         onClipCreated={handleClipCreated}
       />
+
+      {/* User Authentication & Profile Modal */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        currentUser={currentUser}
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+        }}
+        onLogout={() => {
+          setCurrentUser(null);
+        }}
+      />
+
+      {/* Collaborative Watch Party Modal */}
+      <WatchPartyModal
+        isOpen={isWatchPartyOpen}
+        onClose={() => setIsWatchPartyOpen(false)}
+        video={activeVideo}
+        currentTime={currentTime}
+        currentUser={currentUser}
+        activeRoom={activeWatchRoom}
+        onJoinOrCreateRoom={(room) => {
+          setActiveWatchRoom(room);
+        }}
+        onLeaveRoom={() => {
+          setActiveWatchRoom(null);
+          setFloatingReactions([]);
+        }}
+        onSeek={handleSeek}
+        onSendPartyReaction={handleSendPartyReaction}
+      />
     </div>
   );
 }
@@ -425,4 +664,3 @@ function formatTime(seconds: number): string {
   const s = Math.floor(seconds % 60);
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
-
