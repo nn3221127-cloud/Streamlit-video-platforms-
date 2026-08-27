@@ -10,6 +10,7 @@ import { CacheTelemetryModal } from './components/CacheTelemetryModal';
 import { ClipExtractorModal } from './components/ClipExtractorModal';
 import { AuthModal } from './components/AuthModal';
 import { WatchPartyModal } from './components/WatchPartyModal';
+import { P2PEngineDashboard } from './components/P2PEngineDashboard';
 import {
   VideoItem,
   UserState,
@@ -580,6 +581,11 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Zero-Server P2P Streaming Engine & Chaos Telemetry Dashboard */}
+        <div className="mt-12">
+          <P2PEngineDashboard videoId={activeVideo.id} videoTitle={activeVideo.title} />
+        </div>
 
         {/* Personalized Content Rails & Context Graph */}
         <div className="mt-12 pt-8 border-t border-slate-800/80">
